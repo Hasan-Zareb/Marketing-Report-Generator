@@ -6,7 +6,8 @@ import pandas as pd
 import streamlit as st
 
 from processor import (
-    REQUIRED_COLUMNS,
+    CANONICAL_COLUMNS,
+    NEW_TO_CANONICAL,
     _resolve_reference_path,
     export_csv,
     process,
@@ -43,9 +44,10 @@ def main() -> None:
         st.session_state.last_file_id = None
 
     uploaded = st.file_uploader(
-        "Upload input CSV (e.g. Input File 1.csv)",
+        "Upload input CSV (e.g. Marketing Performance Dec 2025 to Jan 2026.csv)",
         type=["csv"],
-        help="Must include: creative_network, day, free_trial_be_events, revenue_3ea7d4b1_events, cost",
+        help="Old format: creative_network, day, free_trial_be_events, revenue_3ea7d4b1_events, cost. "
+        "New format: Ad name, Day (date), FREE_TRIAL_BE, REVENUE, Ad spend.",
     )
 
     # Clear reports if a new file is uploaded
@@ -68,20 +70,29 @@ def main() -> None:
 
     try:
         raw = uploaded.read()
-        df = pd.read_csv(io.BytesIO(raw), encoding="utf-8")
-    except UnicodeDecodeError:
+        df = pd.read_csv(io.BytesIO(raw), encoding="utf-8-sig")
+    except Exception:
         try:
-            df = pd.read_csv(io.BytesIO(raw), encoding="latin-1")
-        except Exception as e2:
-            st.error(f"Could not read CSV with latin-1: {e2}")
+            df = pd.read_csv(io.BytesIO(raw), encoding="utf-8")
+        except UnicodeDecodeError:
+            try:
+                df = pd.read_csv(io.BytesIO(raw), encoding="latin-1")
+            except Exception as e2:
+                st.error(f"Could not read CSV with latin-1: {e2}")
+                st.stop()
+        except Exception as e:
+            st.error(f"Could not read CSV: {e}")
             st.stop()
-    except Exception as e:
-        st.error(f"Could not read CSV: {e}")
-        st.stop()
+    # Strip BOM from column names (e.g. "ï»¿Channel" -> "Channel")
+    df.columns = [c.lstrip("\ufeff") if isinstance(c, str) else c for c in df.columns]
 
     missing = validate_columns(df)
     if missing:
-        st.error(f"Missing required columns: {', '.join(missing)}. Need: {', '.join(REQUIRED_COLUMNS)}.")
+        st.error(
+            f"Missing required columns: {', '.join(missing)}. "
+            f"Need either old format ({', '.join(CANONICAL_COLUMNS)}) or "
+            f"new format ({', '.join(NEW_TO_CANONICAL)})."
+        )
         st.stop()
 
     if df.empty:

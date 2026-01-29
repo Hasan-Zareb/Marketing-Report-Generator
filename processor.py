@@ -5,13 +5,25 @@ from typing import Optional
 
 import pandas as pd
 
-REQUIRED_COLUMNS = [
+# Canonical names used in the pipeline (old input format)
+CANONICAL_COLUMNS = [
     "creative_network",
     "day",
     "free_trial_be_events",
     "revenue_3ea7d4b1_events",
     "cost",
 ]
+
+# New input format -> canonical
+NEW_TO_CANONICAL = {
+    "Ad name": "creative_network",
+    "Day (date)": "day",
+    "FREE_TRIAL_BE": "free_trial_be_events",
+    "REVENUE": "revenue_3ea7d4b1_events",
+    "Ad spend": "cost",
+}
+
+REQUIRED_COLUMNS = CANONICAL_COLUMNS
 
 OUTPUT_COLUMNS = [
     "Show Name",
@@ -157,8 +169,9 @@ def process(
         (daily_output, weekly_output) DataFrames with columns Show Name, #Free Trials, #Subscriptions,
         Ad Spend, Cost of Free Trial, CAC.
     """
+    df = normalize_input_columns(input_df)
     ref = load_reference(reference_path)
-    xl = xlookup(input_df, ref)
+    xl = xlookup(df, ref)
 
     for col in ("free_trial_be_events", "revenue_3ea7d4b1_events", "cost"):
         xl[col] = pd.to_numeric(xl[col], errors="coerce").fillna(0)
@@ -192,10 +205,22 @@ def process(
     return daily_out, weekly_out
 
 
+def normalize_input_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """If input uses new-format column names, rename to canonical. Else return as-is."""
+    if all(k in df.columns for k in NEW_TO_CANONICAL):
+        return df.rename(columns=NEW_TO_CANONICAL)
+    return df
+
+
 def validate_columns(df: pd.DataFrame) -> list[str]:
-    """Return list of missing required column names. Empty if all present."""
-    missing = [c for c in REQUIRED_COLUMNS if c not in df.columns]
-    return missing
+    """Return list of missing required column names. Empty if all present (old or new format)."""
+    if all(c in df.columns for c in CANONICAL_COLUMNS):
+        return []
+    if all(k in df.columns for k in NEW_TO_CANONICAL):
+        return []
+    missing_c = [c for c in CANONICAL_COLUMNS if c not in df.columns]
+    missing_n = [k for k in NEW_TO_CANONICAL if k not in df.columns]
+    return missing_n if len(missing_n) <= len(missing_c) else missing_c
 
 
 def export_csv(df: pd.DataFrame) -> str:
