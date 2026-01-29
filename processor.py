@@ -26,6 +26,7 @@ NEW_TO_CANONICAL = {
 REQUIRED_COLUMNS = CANONICAL_COLUMNS
 
 OUTPUT_COLUMNS = [
+    "Report Period",
     "Show Name",
     "#Free Trials",
     "#Subscriptions",
@@ -86,25 +87,24 @@ def _latest_day(df: pd.DataFrame) -> Optional[pd.Timestamp]:
     return pd.Timestamp(dates.max())
 
 
-def _latest_complete_week_dates(df: pd.DataFrame) -> Optional[list]:
-    """Dates of latest complete ISO week (Mon–Sun) present in data; else week containing latest day."""
-    dates = df["day"].dropna()
-    if dates.empty:
-        return None
-    dates = pd.to_datetime(dates)
-    data_dates = set(dates.dt.normalize())
-    latest = pd.Timestamp(dates.max()).normalize()
-    y, w, _ = latest.isocalendar()
-    fallback_mon = pd.Timestamp.fromisocalendar(int(y), int(w), 1)
-    fallback_week = [fallback_mon + pd.Timedelta(days=i) for i in range(7)]
+def _past_7_days_from_today() -> list:
+    """Return list of dates for the past 7 days (including today)."""
+    today = pd.Timestamp.now().normalize()
+    return [today - pd.Timedelta(days=i) for i in range(6, -1, -1)]
 
-    mon = fallback_mon
-    for _ in range(53):
-        week_dates = [mon + pd.Timedelta(days=i) for i in range(7)]
-        if all(d in data_dates for d in week_dates):
-            return week_dates
-        mon -= pd.Timedelta(days=7)
-    return fallback_week
+
+def _format_date(date: pd.Timestamp) -> str:
+    """Format date as 'Jan 29, 2026'."""
+    return date.strftime("%b %d, %Y")
+
+
+def _format_date_range(start: pd.Timestamp, end: pd.Timestamp) -> str:
+    """Format date range as 'Jan 23 - Jan 29, 2026'."""
+    if start.year == end.year:
+        if start.month == end.month:
+            return f"{start.strftime('%b %d')} - {end.strftime('%b %d, %Y')}"
+        return f"{start.strftime('%b %d')} - {end.strftime('%b %d, %Y')}"
+    return f"{start.strftime('%b %d, %Y')} - {end.strftime('%b %d, %Y')}"
 
 
 def _filter_by_dates(df: pd.DataFrame, keep_dates: list[pd.Timestamp]) -> pd.DataFrame:
@@ -126,8 +126,8 @@ def _pivot(df: pd.DataFrame) -> pd.DataFrame:
     return agg
 
 
-def _build_output(pivot_df: pd.DataFrame) -> pd.DataFrame:
-    """Build output table: Show Name, #Free Trials, #Subscriptions, Ad Spend, Cost of Free Trial, CAC."""
+def _build_output(pivot_df: pd.DataFrame, report_period: str) -> pd.DataFrame:
+    """Build output table: Report Period, Show Name, #Free Trials, #Subscriptions, Ad Spend, Cost of Free Trial, CAC."""
     out = pivot_df.rename(columns={
         "free_trial_be_events": "#Free Trials",
         "revenue_3ea7d4b1_events": "#Subscriptions",
@@ -154,6 +154,9 @@ def _build_output(pivot_df: pd.DataFrame) -> pd.DataFrame:
             out[col] = out[col].apply(
                 lambda x: round(float(x), 1) if isinstance(x, (int, float)) and not pd.isna(x) else x
             )
+
+    # Add Report Period as first column (same value for all rows)
+    out.insert(0, "Report Period", report_period)
 
     return out[OUTPUT_COLUMNS]
 
@@ -191,16 +194,15 @@ def process(
 
     daily_filtered = _filter_by_dates(xl, [latest])
     daily_pivot = _pivot(daily_filtered)
-    daily_out = _build_output(daily_pivot)
+    daily_period = _format_date(latest)
+    daily_out = _build_output(daily_pivot, daily_period)
 
-    # Weekly: latest complete week (or partial)
-    week_dates = _latest_complete_week_dates(xl)
-    if not week_dates:
-        weekly_out = pd.DataFrame(columns=OUTPUT_COLUMNS)
-    else:
-        weekly_filtered = _filter_by_dates(xl, week_dates)
-        weekly_pivot = _pivot(weekly_filtered)
-        weekly_out = _build_output(weekly_pivot)
+    # Weekly: past 7 days from today (including today)
+    week_dates = _past_7_days_from_today()
+    weekly_filtered = _filter_by_dates(xl, week_dates)
+    weekly_pivot = _pivot(weekly_filtered)
+    weekly_period = _format_date_range(week_dates[0], week_dates[-1])
+    weekly_out = _build_output(weekly_pivot, weekly_period)
 
     return daily_out, weekly_out
 
