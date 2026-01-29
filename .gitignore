@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+.venv/
+.env
+.env.local
+
+# OS
+.DS_Store
+
+# Large data / outputs (optional: remove to track)
+Input File 1.csv
+Daily Output.csv
+Weekly Output.csv
+Pivot Table.csv
+Xlookup file.csv
