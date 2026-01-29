@@ -87,10 +87,15 @@ def _latest_day(df: pd.DataFrame) -> Optional[pd.Timestamp]:
     return pd.Timestamp(dates.max())
 
 
-def _past_7_days_from_today() -> list:
-    """Return list of dates for the past 7 days (including today)."""
-    today = pd.Timestamp.now().normalize()
-    return [today - pd.Timedelta(days=i) for i in range(6, -1, -1)]
+def _yesterday() -> pd.Timestamp:
+    """Return yesterday's date (today - 1 day)."""
+    return pd.Timestamp.now().normalize() - pd.Timedelta(days=1)
+
+
+def _past_7_days_ending_yesterday() -> list:
+    """Return list of dates for the past 7 days ending yesterday (today - 7 through today - 1)."""
+    yesterday = _yesterday()
+    return [yesterday - pd.Timedelta(days=i) for i in range(6, -1, -1)]
 
 
 def _format_date(date: pd.Timestamp) -> str:
@@ -186,19 +191,15 @@ def process(
         empty = pd.DataFrame(columns=OUTPUT_COLUMNS)
         return empty.copy(), empty.copy()
 
-    # Daily: latest day
-    latest = _latest_day(xl)
-    if latest is None:
-        empty = pd.DataFrame(columns=OUTPUT_COLUMNS)
-        return empty.copy(), empty.copy()
-
-    daily_filtered = _filter_by_dates(xl, [latest])
+    # Daily: yesterday (today - 1)
+    yesterday = _yesterday()
+    daily_filtered = _filter_by_dates(xl, [yesterday])
     daily_pivot = _pivot(daily_filtered)
-    daily_period = _format_date(latest)
+    daily_period = _format_date(yesterday)
     daily_out = _build_output(daily_pivot, daily_period)
 
-    # Weekly: past 7 days from today (including today)
-    week_dates = _past_7_days_from_today()
+    # Weekly: past 7 days ending yesterday (today - 7 through today - 1)
+    week_dates = _past_7_days_ending_yesterday()
     weekly_filtered = _filter_by_dates(xl, week_dates)
     weekly_pivot = _pivot(weekly_filtered)
     weekly_period = _format_date_range(week_dates[0], week_dates[-1])
