@@ -169,9 +169,18 @@ def _build_output(pivot_df: pd.DataFrame, report_period: str) -> pd.DataFrame:
 def process(
     input_df: pd.DataFrame,
     reference_path: Optional[Path] = None,
+    daily_date: Optional[pd.Timestamp] = None,
+    weekly_start_date: Optional[pd.Timestamp] = None,
 ) -> tuple:
     """
     Run Xlookup -> pivot -> Daily/Weekly outputs.
+
+    Args:
+        input_df: Input CSV DataFrame
+        reference_path: Optional path to Show Name Reference.csv
+        daily_date: Date for daily report (defaults to yesterday if not provided)
+        weekly_start_date: Start date for weekly report (defaults to 7 days ago if not provided).
+                          Weekly report includes 7 days from this date (inclusive).
 
     Returns:
         (daily_output, weekly_output) DataFrames with columns Show Name, #Free Trials, #Subscriptions,
@@ -191,15 +200,25 @@ def process(
         empty = pd.DataFrame(columns=OUTPUT_COLUMNS)
         return empty.copy(), empty.copy()
 
-    # Daily: yesterday (today - 1)
-    yesterday = _yesterday()
-    daily_filtered = _filter_by_dates(xl, [yesterday])
+    # Daily: use provided date or default to yesterday
+    if daily_date is None:
+        daily_date = _yesterday()
+    else:
+        daily_date = pd.Timestamp(daily_date).normalize()
+    
+    daily_filtered = _filter_by_dates(xl, [daily_date])
     daily_pivot = _pivot(daily_filtered)
-    daily_period = _format_date(yesterday)
+    daily_period = _format_date(daily_date)
     daily_out = _build_output(daily_pivot, daily_period)
 
-    # Weekly: past 7 days ending yesterday (today - 7 through today - 1)
-    week_dates = _past_7_days_ending_yesterday()
+    # Weekly: use provided start date or default to 7 days ago
+    if weekly_start_date is None:
+        week_dates = _past_7_days_ending_yesterday()
+    else:
+        weekly_start_date = pd.Timestamp(weekly_start_date).normalize()
+        # Generate 7 days from start date (inclusive)
+        week_dates = [weekly_start_date + pd.Timedelta(days=i) for i in range(7)]
+    
     weekly_filtered = _filter_by_dates(xl, week_dates)
     weekly_pivot = _pivot(weekly_filtered)
     weekly_period = _format_date_range(week_dates[0], week_dates[-1])

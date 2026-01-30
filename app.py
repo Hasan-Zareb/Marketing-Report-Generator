@@ -99,10 +99,39 @@ def main() -> None:
         st.warning("Uploaded file is empty.")
         st.stop()
 
+    # Date selection for reports
+    st.subheader("Select Report Dates")
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        daily_date = st.date_input(
+            "Daily Report Date",
+            value=(pd.Timestamp.now() - pd.Timedelta(days=1)).date(),
+            help="Select the date for the daily report",
+            key="daily_date"
+        )
+    
+    with col2:
+        weekly_start_date = st.date_input(
+            "Weekly Report Start Date",
+            value=(pd.Timestamp.now() - pd.Timedelta(days=7)).date(),
+            help="Select the start date for the weekly report (7 days will be included from this date)",
+            key="weekly_start_date"
+        )
+    
+    # Calculate weekly end date (7 days from start, inclusive)
+    from datetime import timedelta
+    weekly_end_date = weekly_start_date + timedelta(days=6)
+    st.caption(f"Weekly report will include dates: {weekly_start_date.strftime('%b %d, %Y')} - {weekly_end_date.strftime('%b %d, %Y')}")
+
     if st.button("Generate reports"):
         with st.spinner("Generating Daily and Weekly outputs…"):
             try:
-                daily, weekly = process(df)
+                daily, weekly = process(
+                    input_df=df,
+                    daily_date=pd.Timestamp(daily_date),
+                    weekly_start_date=pd.Timestamp(weekly_start_date)
+                )
             except Exception as e:
                 st.error(f"Processing failed: {e}")
                 raise
