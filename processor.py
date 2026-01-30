@@ -1,5 +1,6 @@
 """Core logic: Xlookup, pivot, Daily/Weekly output."""
 
+import re
 from pathlib import Path
 from typing import Optional
 
@@ -41,28 +42,45 @@ def _resolve_reference_path() -> Path:
     return Path(__file__).resolve().parent / "Show Name Reference.csv"
 
 
+def _normalize_creative_code(code: str) -> str:
+    """Normalize creative_network code for matching: lowercase, normalize dashes, normalize whitespace."""
+    code = str(code).strip().lower()
+    # Normalize different dash characters to regular hyphen
+    code = code.replace("–", "-").replace("—", "-").replace("−", "-")
+    # Normalize whitespace (multiple spaces to single space)
+    code = re.sub(r"\s+", " ", code)
+    return code
+
+
 def load_reference(path: Optional[Path] = None) -> pd.DataFrame:
-    """Load Show Name Reference CSV. Trims creative_network for matching."""
+    """Load Show Name Reference CSV. Normalizes creative_network for matching."""
     p = path or _resolve_reference_path()
     df = pd.read_csv(p, encoding="latin-1")
-    df["creative_network"] = df["creative_network"].astype(str).str.strip()
+    df["creative_network"] = df["creative_network"].astype(str)
+    df["creative_network_normalized"] = df["creative_network"].apply(_normalize_creative_code)
     return df
 
 
 def xlookup(input_df: pd.DataFrame, reference_df: pd.DataFrame) -> pd.DataFrame:
     """Left-join on creative_network; add Show Name after creative_network. Unmapped -> (Unmapped)."""
     input_df = input_df.copy()
-    input_df["creative_network"] = input_df["creative_network"].astype(str).str.strip()
+    input_df["creative_network"] = input_df["creative_network"].astype(str)
+    input_df["creative_network_normalized"] = input_df["creative_network"].apply(_normalize_creative_code)
 
     # Handle both old format ("show") and new format ("Show name")
     show_col = "Show name" if "Show name" in reference_df.columns else "show"
-    ref = reference_df[["creative_network", show_col]].drop_duplicates(subset="creative_network")
+    ref = reference_df[["creative_network_normalized", show_col]].drop_duplicates(
+        subset="creative_network_normalized"
+    )
     merged = input_df.merge(
         ref.rename(columns={show_col: "Show Name"}),
-        on="creative_network",
+        on="creative_network_normalized",
         how="left",
     )
     merged["Show Name"] = merged["Show Name"].fillna("(Unmapped)")
+    
+    # Drop the normalized column
+    merged = merged.drop(columns=["creative_network_normalized"])
 
     cols = list(merged.columns)
     cn_idx = cols.index("creative_network")
@@ -120,6 +138,26 @@ def _filter_by_dates(df: pd.DataFrame, keep_dates: list[pd.Timestamp]) -> pd.Dat
 
 def _pivot(df: pd.DataFrame) -> pd.DataFrame:
     """Group by Show Name; sum free_trial_be_events, revenue_3ea7d4b1_events, cost. No Grand Total."""
+    # Normalize Show Name to lowercase for consistent grouping (handles case variations)
+    # Then convert to title case for display, preserving acronyms like "IAS"
+    # Keep "no" and "(Unmapped)" as separate, distinct entries
+    df = df.copy()
+    show_names = df["Show Name"].astype(str)
+    
+    # Convert to lowercase for grouping (to merge duplicates)
+    show_names_lower = show_names.str.lower().str.strip()
+    
+    # Preserve special cases: "no" and "(Unmapped)" should remain separate
+    # Use a mapping to preserve these exactly
+    normalized = show_names_lower.str.title()
+    
+    # Fix special cases
+    normalized = normalized.str.replace(r'^Ias\s+', 'IAS ', regex=True)  # Preserve IAS acronym
+    normalized = normalized.where(show_names_lower != 'no', 'No')  # Keep "no" as "No"
+    normalized = normalized.where(show_names_lower != '(unmapped)', '(Unmapped)')  # Keep "(Unmapped)" as-is
+    
+    df["Show Name"] = normalized
+    
     agg = (
         df.groupby("Show Name", as_index=False)
         .agg(
