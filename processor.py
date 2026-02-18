@@ -1,7 +1,6 @@
-"""Core logic: Xlookup, pivot, Daily/Weekly output."""
+"""Core logic: Xlookup (abbreviations), pivot, Daily/Weekly output."""
 
 import re
-from pathlib import Path
 from typing import Optional
 
 import pandas as pd
@@ -18,6 +17,7 @@ CANONICAL_COLUMNS = [
 # New input format -> canonical
 NEW_TO_CANONICAL = {
     "Ad name": "creative_network",
+    "Adgroup name": "adgroup_name",  # Used for abbreviation lookup (not in CANONICAL_COLUMNS)
     "Day (date)": "day",
     "FREE_TRIAL_BE": "free_trial_be_events",
     "REVENUE": "revenue_3ea7d4b1_events",
@@ -36,60 +36,99 @@ OUTPUT_COLUMNS = [
     "CAC",
 ]
 
+# Hardcoded abbreviation -> Show name. Ad name column is searched; first match maps to the show.
+# Keys are uppercase for matching; values are display show names.
+ABBREVIATION_TO_SHOW = {
+    "BKC": "boss ka comeback",
+    "CDS": "ceo's dirty secret",
+    "CKW": "ceo ki wapsi",
+    "COMB": "crushing on my bodygaurd",
+    "CYN": "chehra ya nakaab",
+    "DSDT": "dil se dil tak",
+    "FRTA": "from rivals to allies",
+    "FWL": "Forever was a lie",
+    "HAK": "humari adhoori kahani",
+    "IO": "independent organ",
+    "IPUP": "IAS pyaar under pressure",
+    "LGRO": "love gone revenge on",
+    "LOD": "love or divorce",
+    "LR": "love racer",
+    "LAAPATA LADY": "laapata lady",
+    "LOCKED IN": "locked in",
+    "MAFS": "married at first sight",
+    "MBDLF": "my billion dollar love fund",
+    "MBHC": "maa beta aur hidden ceo",
+    "MBMD": "maa beta aur millionaire doctor",
+    "MBVD": "maa beta aur vicky donor",
+    "MHYW": "mr huo your wife",
+    "MJ": "Maya Jaal",
+    "MMHN": "married my husbands nemesis",
+    "MWP": "mohalle wala pyaar",
+    "OFNB": "one fateful night with my boss",
+    "OLL": "one last love",
+    "OLTOOS": "our love to ocean of stars",
+    "PKPT": "pyaar ka price tag",
+    "QPSB": "qatil pati se badla",
+    "QWC": "qismat wala connection",
+    "SBM": "shaadi by mistake",
+    "SKG": "suhaag ka gamble",
+    "SMC": "saving mr ceo",
+    "STS": "shaadi to soulmates",
+    "SWS": "saazish wali shaadi",
+    "TCC": "the comeback ceo",
+    "TDPP": "the devil prince's pursuit",
+    "TVW": "laapata lady",
+    "TROPHY WIFE": "Trophy Wife",
+    "WKMW": "who killed my wife",
+    "WAARIS": "Waaris",
+    "ASHVRAT": "ashvrat",
+    "BBB": "band baaja billionaire",
+}
+UNMAPPED_LABEL = "no"  # Match Excel report for unmapped adgroups
 
-def _resolve_reference_path() -> Path:
-    """Path to bundled Show Name Reference.csv (same folder as this module)."""
-    return Path(__file__).resolve().parent / "Show Name Reference.csv"
+
+def _find_show_name_by_abbreviation(text: str, abbrev_to_show: Optional[dict[str, str]] = None) -> Optional[str]:
+    """
+    Search text (e.g. adgroup name or ad name) for hardcoded abbreviations.
+    Returns Show name if any abbreviation is found; uses longest matches first.
+    """
+    abbrev_to_show = abbrev_to_show or ABBREVIATION_TO_SHOW
+    if not text or not abbrev_to_show:
+        return None
+    text_upper = str(text).upper()
+    # Sort by length descending so "MHYW" matches before "MHY"
+    for abbr in sorted(abbrev_to_show.keys(), key=len, reverse=True):
+        # Word-boundary style: abbreviation as a distinct token (surrounded by non-alphanumeric)
+        pattern = r"(?<![A-Za-z0-9])" + re.escape(abbr) + r"(?![A-Za-z0-9])"
+        if re.search(pattern, text_upper):
+            return abbrev_to_show[abbr]
+    return None
 
 
-def _normalize_creative_code(code: str) -> str:
-    """Normalize creative_network code for matching: lowercase, normalize dashes, normalize whitespace."""
-    code = str(code).strip().lower()
-    # Normalize different dash characters to regular hyphen
-    code = code.replace("–", "-").replace("—", "-").replace("−", "-")
-    # Normalize whitespace (multiple spaces to single space)
-    code = re.sub(r"\s+", " ", code)
-    return code
-
-
-def load_reference(path: Optional[Path] = None) -> pd.DataFrame:
-    """Load Show Name Reference CSV. Normalizes creative_network for matching."""
-    p = path or _resolve_reference_path()
-    df = pd.read_csv(p, encoding="latin-1")
-    df["creative_network"] = df["creative_network"].astype(str)
-    df["creative_network_normalized"] = df["creative_network"].apply(_normalize_creative_code)
-    return df
-
-
-def xlookup(input_df: pd.DataFrame, reference_df: pd.DataFrame) -> pd.DataFrame:
-    """Left-join on creative_network; add Show Name after creative_network. Unmapped -> (Unmapped)."""
+def xlookup_by_abbreviations(input_df: pd.DataFrame) -> pd.DataFrame:
+    """Map Show Name by searching the Ad name column (creative_network) for hardcoded abbreviations."""
     input_df = input_df.copy()
-    input_df["creative_network"] = input_df["creative_network"].astype(str)
-    input_df["creative_network_normalized"] = input_df["creative_network"].apply(_normalize_creative_code)
 
-    # Handle both old format ("show") and new format ("Show name")
-    show_col = "Show name" if "Show name" in reference_df.columns else "show"
-    ref = reference_df[["creative_network_normalized", show_col]].drop_duplicates(
-        subset="creative_network_normalized"
-    )
-    merged = input_df.merge(
-        ref.rename(columns={show_col: "Show Name"}),
-        on="creative_network_normalized",
-        how="left",
-    )
-    merged["Show Name"] = merged["Show Name"].fillna("(Unmapped)")
-    
-    # Drop the normalized column
-    merged = merged.drop(columns=["creative_network_normalized"])
+    if "creative_network" not in input_df.columns:
+        input_df["Show Name"] = UNMAPPED_LABEL
+        return input_df
 
-    cols = list(merged.columns)
-    cn_idx = cols.index("creative_network")
-    sn_idx = cols.index("Show Name")
-    if sn_idx != cn_idx + 1:
-        cols.remove("Show Name")
+    def resolve(row):
+        val = row.get("creative_network")
+        return _find_show_name_by_abbreviation(str(val) if pd.notna(val) else "", ABBREVIATION_TO_SHOW)
+
+    show_names = input_df.apply(resolve, axis=1)
+    input_df["Show Name"] = show_names.fillna(UNMAPPED_LABEL)
+
+    # Insert Show Name after creative_network if present
+    cols = list(input_df.columns)
+    if "creative_network" in cols:
+        cn_idx = cols.index("creative_network")
+        if "Show Name" in cols:
+            cols.remove("Show Name")
         cols.insert(cn_idx + 1, "Show Name")
-        merged = merged[cols]
-    return merged
+        input_df = input_df[cols]
+    return input_df
 
 
 def _parse_day(ser: pd.Series) -> pd.Series:
@@ -153,8 +192,7 @@ def _pivot(df: pd.DataFrame) -> pd.DataFrame:
     
     # Fix special cases
     normalized = normalized.str.replace(r'^Ias\s+', 'IAS ', regex=True)  # Preserve IAS acronym
-    normalized = normalized.where(show_names_lower != 'no', 'No')  # Keep "no" as "No"
-    normalized = normalized.where(show_names_lower != '(unmapped)', '(Unmapped)')  # Keep "(Unmapped)" as-is
+    normalized = normalized.where(show_names_lower != 'no', 'No')  # Keep "no" (unmapped) as "No" - match Excel
     
     df["Show Name"] = normalized
     
@@ -206,16 +244,14 @@ def _build_output(pivot_df: pd.DataFrame, report_period: str) -> pd.DataFrame:
 
 def process(
     input_df: pd.DataFrame,
-    reference_path: Optional[Path] = None,
     daily_date: Optional[pd.Timestamp] = None,
     weekly_start_date: Optional[pd.Timestamp] = None,
 ) -> tuple:
     """
-    Run Xlookup -> pivot -> Daily/Weekly outputs.
+    Run Xlookup (abbreviations) -> pivot -> Daily/Weekly outputs.
 
     Args:
         input_df: Input CSV DataFrame
-        reference_path: Optional path to Show Name Reference.csv
         daily_date: Date for daily report (defaults to yesterday if not provided)
         weekly_start_date: Start date for weekly report (defaults to 7 days ago if not provided).
                           Weekly report includes 7 days from this date (inclusive).
@@ -225,8 +261,7 @@ def process(
         Ad Spend, Cost of Free Trial, CAC.
     """
     df = normalize_input_columns(input_df)
-    ref = load_reference(reference_path)
-    xl = xlookup(df, ref)
+    xl = xlookup_by_abbreviations(df)
 
     for col in ("free_trial_be_events", "revenue_3ea7d4b1_events", "cost"):
         xl[col] = pd.to_numeric(xl[col], errors="coerce").fillna(0)
@@ -274,12 +309,14 @@ def normalize_input_columns(df: pd.DataFrame) -> pd.DataFrame:
 
 def validate_columns(df: pd.DataFrame) -> list[str]:
     """Return list of missing required column names. Empty if all present (old or new format)."""
+    # Adgroup name is optional for new format (improves abbreviation matching)
+    new_required = {k: v for k, v in NEW_TO_CANONICAL.items() if v != "adgroup_name"}
     if all(c in df.columns for c in CANONICAL_COLUMNS):
         return []
-    if all(k in df.columns for k in NEW_TO_CANONICAL):
+    if all(k in df.columns for k in new_required):
         return []
     missing_c = [c for c in CANONICAL_COLUMNS if c not in df.columns]
-    missing_n = [k for k in NEW_TO_CANONICAL if k not in df.columns]
+    missing_n = [k for k in new_required if k not in df.columns]
     return missing_n if len(missing_n) <= len(missing_c) else missing_c
 
 

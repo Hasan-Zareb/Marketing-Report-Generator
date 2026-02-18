@@ -12,9 +12,11 @@ venv/
 # OS
 .DS_Store
 
-# Large data / outputs (optional: remove to track)
-Input File 1.csv
-Daily Output.csv
-Weekly Output.csv
+# Large data / outputs
+Input File*.csv
+Daily Output*.csv
+Weekly Output*.csv
 Pivot Table.csv
 Xlookup file.csv
+Marketing Performance*.csv
+*.csv.backup
