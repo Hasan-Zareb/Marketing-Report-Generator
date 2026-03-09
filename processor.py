@@ -14,7 +14,7 @@ CANONICAL_COLUMNS = [
     "cost",
 ]
 
-# New input format -> canonical
+# New input format -> canonical (Installs optional for CSV/API)
 NEW_TO_CANONICAL = {
     "Ad name": "creative_network",
     "Adgroup name": "adgroup_name",  # Used for abbreviation lookup (not in CANONICAL_COLUMNS)
@@ -22,6 +22,7 @@ NEW_TO_CANONICAL = {
     "FREE_TRIAL_BE": "free_trial_be_events",
     "REVENUE": "revenue_3ea7d4b1_events",
     "Ad spend": "cost",
+    "Installs": "installs",
 }
 
 REQUIRED_COLUMNS = CANONICAL_COLUMNS
@@ -31,6 +32,7 @@ OUTPUT_COLUMNS = [
     "Show Name",
     "#Free Trials",
     "#Subscriptions",
+    "#Installs",
     "Ad Spend",
     "Cost of Free Trial",
     "CAC",
@@ -40,11 +42,17 @@ OUTPUT_COLUMNS = [
 # Keys are uppercase for matching; values are display show names.
 ABBREVIATION_TO_SHOW = {
     "BKC": "boss ka comeback",
+    "BKB": "Baazigar Ka Badla",
     "CDS": "ceo's dirty secret",
     "CKW": "ceo ki wapsi",
     "COMB": "crushing on my bodygaurd",
     "CYN": "chehra ya nakaab",
+    "CSSZ": "Cement Se Sasti Zindagi",
     "DSDT": "dil se dil tak",
+    "DOJ": "Don Of Jaunpur",
+    "DKA": "Dil Ki Adalat",
+    "DBG": "Dabangg Bodyguard",
+    "DWI": "Dhokha-E-ishq",
     "FRTA": "from rivals to allies",
     "FWL": "Forever was a lie",
     "HAK": "humari adhoori kahani",
@@ -53,6 +61,7 @@ ABBREVIATION_TO_SHOW = {
     "LGRO": "love gone revenge on",
     "LOD": "love or divorce",
     "LR": "love racer",
+    "Laathi": "Laathi",
     "LAAPATA LADY": "laapata lady",
     "LOCKED IN": "locked in",
     "MAFS": "married at first sight",
@@ -60,6 +69,7 @@ ABBREVIATION_TO_SHOW = {
     "MBHC": "maa beta aur hidden ceo",
     "MBMD": "maa beta aur millionaire doctor",
     "MBVD": "maa beta aur vicky donor",
+    "MBMP": "maa beti aur missing papa",
     "MHYW": "mr huo your wife",
     "MJ": "Maya Jaal",
     "MMHN": "married my husbands nemesis",
@@ -70,6 +80,8 @@ ABBREVIATION_TO_SHOW = {
     "PKPT": "pyaar ka price tag",
     "QPSB": "qatil pati se badla",
     "QWC": "qismat wala connection",
+    "RWI": "Risk Wala Ishq",
+    "RWO": "Rickshawala Officer",
     "SBM": "shaadi by mistake",
     "SKG": "suhaag ka gamble",
     "SMC": "saving mr ceo",
@@ -175,45 +187,50 @@ def _filter_by_dates(df: pd.DataFrame, keep_dates: list[pd.Timestamp]) -> pd.Dat
     return df[df["day"].dt.date.isin(keep_set)]
 
 
+def _normalize_show_name_series(show_series: pd.Series) -> pd.Series:
+    """Normalize Show Name for consistent grouping (same logic as _pivot)."""
+    show_names = show_series.astype(str)
+    show_names_lower = show_names.str.lower().str.strip()
+    normalized = show_names_lower.str.title()
+    normalized = normalized.str.replace(r'^Ias\s+', 'IAS ', regex=True)
+    normalized = normalized.where(show_names_lower != 'no', 'No')
+    return normalized
+
+
 def _pivot(df: pd.DataFrame) -> pd.DataFrame:
     """Group by Show Name; sum free_trial_be_events, revenue_3ea7d4b1_events, cost. No Grand Total."""
-    # Normalize Show Name to lowercase for consistent grouping (handles case variations)
-    # Then convert to title case for display, preserving acronyms like "IAS"
-    # Keep "no" and "(Unmapped)" as separate, distinct entries
     df = df.copy()
-    show_names = df["Show Name"].astype(str)
-    
-    # Convert to lowercase for grouping (to merge duplicates)
-    show_names_lower = show_names.str.lower().str.strip()
-    
-    # Preserve special cases: "no" and "(Unmapped)" should remain separate
-    # Use a mapping to preserve these exactly
-    normalized = show_names_lower.str.title()
-    
-    # Fix special cases
-    normalized = normalized.str.replace(r'^Ias\s+', 'IAS ', regex=True)  # Preserve IAS acronym
-    normalized = normalized.where(show_names_lower != 'no', 'No')  # Keep "no" (unmapped) as "No" - match Excel
-    
-    df["Show Name"] = normalized
-    
-    agg = (
-        df.groupby("Show Name", as_index=False)
-        .agg(
-            free_trial_be_events=("free_trial_be_events", "sum"),
-            revenue_3ea7d4b1_events=("revenue_3ea7d4b1_events", "sum"),
-            cost=("cost", "sum"),
-        )
-    )
+    df["Show Name"] = _normalize_show_name_series(df["Show Name"])
+
+    agg_dict = {
+        "free_trial_be_events": ("free_trial_be_events", "sum"),
+        "revenue_3ea7d4b1_events": ("revenue_3ea7d4b1_events", "sum"),
+        "cost": ("cost", "sum"),
+    }
+    if "installs" in df.columns:
+        agg_dict["installs"] = ("installs", "sum")
+    agg = df.groupby("Show Name", as_index=False).agg(**agg_dict)
     return agg
 
 
 def _build_output(pivot_df: pd.DataFrame, report_period: str) -> pd.DataFrame:
-    """Build output table: Report Period, Show Name, #Free Trials, #Subscriptions, Ad Spend, Cost of Free Trial, CAC."""
-    out = pivot_df.rename(columns={
+    """Build output table: Report Period, Show Name, #Free Trials, #Subscriptions, #Installs, Ad Spend, Cost of Free Trial, CAC."""
+    rename_map = {
         "free_trial_be_events": "#Free Trials",
         "revenue_3ea7d4b1_events": "#Subscriptions",
         "cost": "Ad Spend",
-    })[["Show Name", "#Free Trials", "#Subscriptions", "Ad Spend"]]
+    }
+    if "installs" in pivot_df.columns:
+        rename_map["installs"] = "#Installs"
+    out = pivot_df.rename(columns=rename_map)
+    base_cols = ["Show Name", "#Free Trials", "#Subscriptions"]
+    if "#Installs" in out.columns:
+        base_cols.append("#Installs")
+    else:
+        out["#Installs"] = 0
+        base_cols.append("#Installs")
+    base_cols.append("Ad Spend")
+    out = out[base_cols]
 
     trials = out["#Free Trials"]
     subs = out["#Subscriptions"]
@@ -229,6 +246,8 @@ def _build_output(pivot_df: pd.DataFrame, report_period: str) -> pd.DataFrame:
 
     # Round all numeric columns to 1 decimal place
     numeric_cols = ["#Free Trials", "#Subscriptions", "Ad Spend", "Cost of Free Trial", "CAC"]
+    if "#Installs" in out.columns:
+        numeric_cols = ["#Free Trials", "#Subscriptions", "#Installs", "Ad Spend", "Cost of Free Trial", "CAC"]
     for col in numeric_cols:
         if col in out.columns:
             # Convert to float and round numeric values, keep "-" as strings
@@ -242,13 +261,90 @@ def _build_output(pivot_df: pd.DataFrame, report_period: str) -> pd.DataFrame:
     return out[OUTPUT_COLUMNS]
 
 
+def _daily_by_show(df: pd.DataFrame, keep_dates: list[pd.Timestamp]) -> pd.DataFrame:
+    """
+    Build daily-by-show DataFrame: one row per (day, Show Name) with summed metrics and derived CAC,
+    Cost of Free Trial, and conversion rates. Used for dashboard time series.
+    """
+    filtered = _filter_by_dates(df, keep_dates)
+    if filtered.empty:
+        return pd.DataFrame(columns=[
+            "day", "Show Name", "#Free Trials", "#Subscriptions", "#Installs", "Ad Spend",
+            "CAC", "Cost of Free Trial", "Conv Trial to Sub %", "Conv Install to Trial %",
+        ])
+    filtered = filtered.copy()
+    filtered["Show Name"] = _normalize_show_name_series(filtered["Show Name"])
+
+    agg_dict = {
+        "free_trial_be_events": ("free_trial_be_events", "sum"),
+        "revenue_3ea7d4b1_events": ("revenue_3ea7d4b1_events", "sum"),
+        "cost": ("cost", "sum"),
+    }
+    if "installs" in filtered.columns:
+        agg_dict["installs"] = ("installs", "sum")
+    agg = (
+        filtered.groupby(["day", "Show Name"], as_index=False)
+        .agg(**agg_dict)
+    )
+    agg = agg.rename(columns={
+        "free_trial_be_events": "#Free Trials",
+        "revenue_3ea7d4b1_events": "#Subscriptions",
+        "cost": "Ad Spend",
+    })
+    if "installs" in agg.columns:
+        agg = agg.rename(columns={"installs": "#Installs"})
+    else:
+        agg["#Installs"] = 0
+
+    trials = agg["#Free Trials"]
+    subs = agg["#Subscriptions"]
+    spend = agg["Ad Spend"]
+    installs = agg["#Installs"]
+
+    agg["Cost of Free Trial"] = spend / trials
+    agg.loc[trials <= 0, "Cost of Free Trial"] = float("nan")
+    agg["CAC"] = spend / subs
+    agg.loc[subs <= 0, "CAC"] = float("nan")
+
+    agg["Conv Trial to Sub %"] = (subs / trials * 100).where(trials > 0, float("nan"))
+    agg["Conv Install to Trial %"] = (trials / installs * 100).where(installs > 0, float("nan"))
+
+    return agg
+
+
+def get_daily_by_show_all(input_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Build daily-by-show DataFrame for all dates in the input (no date filter).
+    Use this to populate the dashboard with full/all-time data.
+    """
+    df = normalize_input_columns(input_df)
+    xl = xlookup_by_abbreviations(df)
+
+    for col in ("free_trial_be_events", "revenue_3ea7d4b1_events", "cost"):
+        xl[col] = pd.to_numeric(xl[col], errors="coerce").fillna(0)
+    if "installs" not in xl.columns:
+        xl["installs"] = 0
+    else:
+        xl["installs"] = pd.to_numeric(xl["installs"], errors="coerce").fillna(0)
+    xl["day"] = _parse_day(xl["day"])
+    xl = xl.dropna(subset=["day"])
+
+    if xl.empty:
+        return pd.DataFrame(columns=[
+            "day", "Show Name", "#Free Trials", "#Subscriptions", "#Installs", "Ad Spend",
+            "CAC", "Cost of Free Trial", "Conv Trial to Sub %", "Conv Install to Trial %",
+        ])
+    all_dates = xl["day"].unique().tolist()
+    return _daily_by_show(xl, all_dates)
+
+
 def process(
     input_df: pd.DataFrame,
     daily_date: Optional[pd.Timestamp] = None,
     weekly_start_date: Optional[pd.Timestamp] = None,
 ) -> tuple:
     """
-    Run Xlookup (abbreviations) -> pivot -> Daily/Weekly outputs.
+    Run Xlookup (abbreviations) -> pivot -> Daily/Weekly outputs + daily-by-show for dashboard.
 
     Args:
         input_df: Input CSV DataFrame
@@ -257,8 +353,8 @@ def process(
                           Weekly report includes 7 days from this date (inclusive).
 
     Returns:
-        (daily_output, weekly_output) DataFrames with columns Show Name, #Free Trials, #Subscriptions,
-        Ad Spend, Cost of Free Trial, CAC.
+        (daily_output, weekly_output, daily_by_show_df). First two have OUTPUT_COLUMNS;
+        daily_by_show_df has one row per (day, Show Name) with metrics and CAC, conversion rates.
     """
     df = normalize_input_columns(input_df)
     xl = xlookup_by_abbreviations(df)
@@ -266,12 +362,21 @@ def process(
     for col in ("free_trial_be_events", "revenue_3ea7d4b1_events", "cost"):
         xl[col] = pd.to_numeric(xl[col], errors="coerce").fillna(0)
 
+    if "installs" not in xl.columns:
+        xl["installs"] = 0
+    else:
+        xl["installs"] = pd.to_numeric(xl["installs"], errors="coerce").fillna(0)
+
     xl["day"] = _parse_day(xl["day"])
     xl = xl.dropna(subset=["day"])
 
     if xl.empty:
         empty = pd.DataFrame(columns=OUTPUT_COLUMNS)
-        return empty.copy(), empty.copy()
+        empty_daily = pd.DataFrame(columns=[
+            "day", "Show Name", "#Free Trials", "#Subscriptions", "#Installs", "Ad Spend",
+            "CAC", "Cost of Free Trial", "Conv Trial to Sub %", "Conv Install to Trial %",
+        ])
+        return empty.copy(), empty.copy(), empty_daily.copy()
 
     # Daily: use provided date or default to yesterday
     if daily_date is None:
@@ -297,20 +402,30 @@ def process(
     weekly_period = _format_date_range(week_dates[0], week_dates[-1])
     weekly_out = _build_output(weekly_pivot, weekly_period)
 
-    return daily_out, weekly_out
+    # Daily-by-show for dashboard (same date range as weekly report)
+    daily_by_show_df = _daily_by_show(xl, week_dates)
+
+    return daily_out, weekly_out, daily_by_show_df
 
 
 def normalize_input_columns(df: pd.DataFrame) -> pd.DataFrame:
     """If input uses new-format column names, rename to canonical. Else return as-is."""
-    if all(k in df.columns for k in NEW_TO_CANONICAL):
-        return df.rename(columns=NEW_TO_CANONICAL)
+    # Require all non-optional new-format columns to consider it new format
+    new_required_keys = [k for k in NEW_TO_CANONICAL if NEW_TO_CANONICAL[k] not in ("adgroup_name", "installs")]
+    if all(k in df.columns for k in new_required_keys):
+        # Rename only columns that exist (Installs optional)
+        rename = {k: v for k, v in NEW_TO_CANONICAL.items() if k in df.columns}
+        return df.rename(columns=rename)
     return df
 
 
 def validate_columns(df: pd.DataFrame) -> list[str]:
     """Return list of missing required column names. Empty if all present (old or new format)."""
-    # Adgroup name is optional for new format (improves abbreviation matching)
-    new_required = {k: v for k, v in NEW_TO_CANONICAL.items() if v != "adgroup_name"}
+    # Adgroup name and Installs are optional for new format
+    new_required = {
+        k: v for k, v in NEW_TO_CANONICAL.items()
+        if v not in ("adgroup_name", "installs")
+    }
     if all(c in df.columns for c in CANONICAL_COLUMNS):
         return []
     if all(k in df.columns for k in new_required):
