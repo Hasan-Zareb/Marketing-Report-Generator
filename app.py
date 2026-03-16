@@ -11,12 +11,14 @@ import streamlit as st
 from dotenv import load_dotenv
 
 from adjust_client import fetch_adjust_report
+from meta_ads_client import fetch_all_accounts as fetch_meta_ads, filter_by_date as meta_filter_by_date
 from processor import (
     CANONICAL_COLUMNS,
     NEW_TO_CANONICAL,
     export_csv,
     get_daily_by_show_all,
     process,
+    process_facebook_web,
     validate_columns,
 )
 
@@ -26,6 +28,7 @@ CHART_COLORS = ["#9D4EDD", "#2D6A4F", "#E85D04", "#7209B7", "#06D6A0"]
 
 
 def main() -> None:
+    load_dotenv()
     st.set_page_config(page_title="Marketing Report Generator", layout="wide")
     _init_session_state()
     _inject_dashboard_css()
@@ -40,7 +43,13 @@ def main() -> None:
             st.caption(f"**Report period:** {start.strftime('%b %d, %Y')} – {end.strftime('%b %d, %Y')}")
     with h2:
         if st.button("Reset", type="secondary"):
-            for key in ["daily_csv", "weekly_csv", "daily_df", "weekly_df", "daily_by_show_df", "report_date_range", "last_file_id"]:
+            for key in [
+                "daily_csv", "weekly_csv", "daily_df", "weekly_df",
+                "daily_by_show_df", "report_date_range", "last_file_id",
+                "adjust_fetched_df", "meta_fetched_df",
+                "daily_web_df", "weekly_web_df", "daily_web_csv", "weekly_web_csv",
+                "fb_web_status",
+            ]:
                 if key in st.session_state:
                     st.session_state[key] = None
             st.rerun()
@@ -149,6 +158,18 @@ def _init_session_state() -> None:
         st.session_state.dashboard_filter = "This Week"
     if "adjust_fetched_df" not in st.session_state:
         st.session_state.adjust_fetched_df = None
+    if "meta_fetched_df" not in st.session_state:
+        st.session_state.meta_fetched_df = None
+    if "daily_web_df" not in st.session_state:
+        st.session_state.daily_web_df = None
+    if "weekly_web_df" not in st.session_state:
+        st.session_state.weekly_web_df = None
+    if "daily_web_csv" not in st.session_state:
+        st.session_state.daily_web_csv = None
+    if "weekly_web_csv" not in st.session_state:
+        st.session_state.weekly_web_csv = None
+    if "fb_web_status" not in st.session_state:
+        st.session_state.fb_web_status = None
 
 
 def _render_dashboard() -> None:
@@ -429,7 +450,7 @@ def _render_report_generator() -> None:
 
     data_source = st.radio(
         "Data source",
-        ["Fetch from Adjust API", "Upload CSV"],
+        ["Fetch from Adjust & Meta API", "Upload CSV"],
         horizontal=True,
         key="report_data_source",
     )
@@ -478,29 +499,48 @@ def _render_report_generator() -> None:
             return
 
     else:
-        # Fetch from Adjust API (all-time data for dashboard)
-        st.caption("Fetch all available Marketing Performance data (partners 34 & 254) from Adjust. The dashboard will use this full dataset; reports use only the dates you choose below.")
+        st.caption("Fetch Marketing Performance data from Adjust (partners 34 & 254) and Facebook Web spend from Meta Ads Manager in one go.")
         load_dotenv()
-        if st.button("Fetch from Adjust"):
+        if st.button("Fetch data from Adjust & Meta"):
             api_token = os.getenv("ADJUST_API_TOKEN")
             if not api_token or not api_token.strip():
                 st.error("Set ADJUST_API_TOKEN in your .env file to use the Adjust API.")
                 return
-            # All-time range: up to 2 years back to yesterday (Adjust may limit range)
+
             fetch_end = date.today() - timedelta(days=1)
             fetch_start = fetch_end - timedelta(days=365 * 2)
-            with st.spinner("Fetching all-time data from Adjust API…"):
+
+            with st.spinner("Fetching data from Adjust API…"):
                 try:
                     fetched = fetch_adjust_report(api_token, fetch_start, fetch_end)
                     st.session_state.adjust_fetched_df = fetched
-                    st.success(f"Fetched {len(fetched):,} rows. Choose report dates below and click Generate reports.")
                 except Exception as e:
                     st.error(f"Adjust API error: {e}")
                     return
+
+            meta_token = os.getenv("META_ACCESS_TOKEN", "").strip()
+            if meta_token and meta_token not in ("PASTE_YOUR_TOKEN_HERE", "your_meta_token_here"):
+                with st.spinner("Fetching Facebook Web spend from Meta Ads API…"):
+                    try:
+                        meta_full = fetch_meta_ads(access_token=meta_token)
+                        st.session_state.meta_fetched_df = meta_full
+                        st.session_state.fb_web_status = f"Meta: {len(meta_full)} rows fetched."
+                    except Exception as e:
+                        st.session_state.meta_fetched_df = None
+                        st.session_state.fb_web_status = f"Meta Ads API error: {e}"
+                        st.warning(f"Meta Ads fetch failed: {e}. Adjust data is still available.")
+            else:
+                st.session_state.meta_fetched_df = None
+                st.session_state.fb_web_status = "META_ACCESS_TOKEN not set. Facebook Web reports will be skipped."
+
+            adjust_count = len(st.session_state.adjust_fetched_df)
+            meta_count = len(st.session_state.meta_fetched_df) if st.session_state.meta_fetched_df is not None else 0
+            st.success(f"Fetched {adjust_count:,} rows from Adjust, {meta_count:,} rows from Meta. Choose dates below and click Generate reports.")
+
         if st.session_state.adjust_fetched_df is not None:
             df = st.session_state.adjust_fetched_df
         else:
-            st.info("Click **Fetch from Adjust** to load data, then choose report dates and generate reports below.")
+            st.info("Click **Fetch data from Adjust & Meta** to load data, then choose report dates and generate reports below.")
             if st.session_state.daily_df is not None and st.session_state.weekly_df is not None:
                 st.info("Previous reports are available below.")
                 _show_tables_with_filters()
@@ -541,22 +581,19 @@ def _render_report_generator() -> None:
     if st.button("Generate reports"):
         with st.spinner("Generating reports and dashboard data…"):
             try:
-                # Reports: only the dates the user chose
                 daily, weekly, _ = process(
                     input_df=df,
                     daily_date=pd.Timestamp(daily_date),
                     weekly_start_date=pd.Timestamp(weekly_start_date),
                 )
-                # Dashboard: all-time data from the same dataset
                 daily_by_show_full = get_daily_by_show_all(df)
             except Exception as e:
                 st.error(f"Processing failed: {e}")
                 raise
-        st.success("Reports ready. View and export below.")
+
         st.session_state.daily_df = daily
         st.session_state.weekly_df = weekly
         st.session_state.daily_by_show_df = daily_by_show_full
-        # Report period caption: full data range for dashboard
         if not daily_by_show_full.empty:
             days = pd.to_datetime(daily_by_show_full["day"])
             st.session_state.report_date_range = (days.min().date(), days.max().date())
@@ -564,7 +601,45 @@ def _render_report_generator() -> None:
             st.session_state.report_date_range = (weekly_start_date, weekly_start_date + timedelta(days=6))
         st.session_state.daily_csv = export_csv(daily)
         st.session_state.weekly_csv = export_csv(weekly)
-        st.rerun()  # Rerun so Dashboard tab sees the new data
+
+        # --- Facebook Web report: Adjust (trials/subs) + Meta (spend) ---
+        meta_full = st.session_state.get("meta_fetched_df")
+        if meta_full is not None and not meta_full.empty:
+            date_start = min(daily_date, weekly_start_date)
+            date_end = max(daily_date, weekly_end_date)
+            meta_filtered = meta_filter_by_date(meta_full, str(date_start), str(date_end))
+            st.session_state.fb_web_status = f"Meta: {len(meta_full)} total rows, {len(meta_filtered)} in selected date range."
+
+            if not meta_filtered.empty:
+                try:
+                    daily_web, weekly_web = process_facebook_web(
+                        adjust_df=df,
+                        meta_df=meta_filtered,
+                        daily_date=pd.Timestamp(daily_date),
+                        weekly_start_date=pd.Timestamp(weekly_start_date),
+                    )
+                    st.session_state.daily_web_df = daily_web
+                    st.session_state.weekly_web_df = weekly_web
+                    st.session_state.daily_web_csv = export_csv(daily_web)
+                    st.session_state.weekly_web_csv = export_csv(weekly_web)
+                except Exception as e:
+                    st.session_state.fb_web_status = f"Facebook Web report generation failed: {e}"
+                    st.session_state.daily_web_df = None
+                    st.session_state.weekly_web_df = None
+            else:
+                st.session_state.fb_web_status = "No Meta Ads data for the selected date range."
+                st.session_state.daily_web_df = None
+                st.session_state.weekly_web_df = None
+        else:
+            if meta_full is None:
+                st.session_state.fb_web_status = st.session_state.get("fb_web_status") or "Meta data not fetched. Click 'Fetch data from Adjust & Meta' first."
+            else:
+                st.session_state.fb_web_status = "Meta API returned no data."
+            st.session_state.daily_web_df = None
+            st.session_state.weekly_web_df = None
+
+        st.success("Reports ready. View and export below.")
+        st.rerun()
 
     if st.session_state.daily_df is not None and st.session_state.weekly_df is not None:
         _show_tables_with_filters()
@@ -650,7 +725,7 @@ def _table_with_filters(
 
 
 def _show_tables_with_filters() -> None:
-    """Display Daily and Weekly tables with per-column filters and export above each."""
+    """Display Daily and Weekly tables, plus Facebook Web tables if available."""
     _table_with_filters(
         st.session_state.daily_df,
         "Daily Output",
@@ -664,6 +739,40 @@ def _show_tables_with_filters() -> None:
         "Weekly Output.csv",
         "weekly",
     )
+
+    # Facebook Web ads section (always show header; show tables or status message)
+    st.divider()
+    st.markdown("### Facebook Web Ads")
+    st.caption("Trials & subscriptions from Adjust (web campaigns) | Ad spend from Meta Ads Manager")
+
+    daily_web = st.session_state.get("daily_web_df")
+    weekly_web = st.session_state.get("weekly_web_df")
+    meta_token = os.getenv("META_ACCESS_TOKEN", "").strip()
+
+    if daily_web is not None and weekly_web is not None and not daily_web.empty and not weekly_web.empty:
+        _table_with_filters(
+            daily_web,
+            "Daily Output (Facebook Web)",
+            "Daily Output (Facebook Web).csv",
+            "daily_web",
+        )
+        st.divider()
+        _table_with_filters(
+            weekly_web,
+            "Weekly Output (Facebook Web)",
+            "Weekly Output (Facebook Web).csv",
+            "weekly_web",
+        )
+    elif daily_web is not None and weekly_web is not None:
+        st.info("Facebook Web reports were generated but contain no data for the selected dates.")
+    else:
+        fb_status = st.session_state.get("fb_web_status")
+        if fb_status:
+            st.info(fb_status)
+        elif not meta_token or meta_token in ("PASTE_YOUR_TOKEN_HERE", "your_meta_token_here"):
+            st.info("Set META_ACCESS_TOKEN in .env (or Streamlit Secrets) to enable Facebook Web reports.")
+        else:
+            st.info("Click **Generate reports** to produce Facebook Web reports alongside the main reports.")
 
 
 if __name__ == "__main__":

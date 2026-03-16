@@ -52,6 +52,7 @@ ABBREVIATION_TO_SHOW = {
     "DOJ": "Don Of Jaunpur",
     "DKA": "Dil Ki Adalat",
     "DBG": "Dabangg Bodyguard",
+    "DEI": "Dhokha-E-ishq",
     "DWI": "Dhokha-E-ishq",
     "FRTA": "from rivals to allies",
     "FWL": "Forever was a lie",
@@ -81,6 +82,7 @@ ABBREVIATION_TO_SHOW = {
     "QPSB": "qatil pati se badla",
     "QWC": "qismat wala connection",
     "RWI": "Risk Wala Ishq",
+    "RAT": "Race Against Time",
     "RWO": "Rickshawala Officer",
     "SBM": "shaadi by mistake",
     "SKG": "suhaag ka gamble",
@@ -110,8 +112,7 @@ def _find_show_name_by_abbreviation(text: str, abbrev_to_show: Optional[dict[str
     text_upper = str(text).upper()
     # Sort by length descending so "MHYW" matches before "MHY"
     for abbr in sorted(abbrev_to_show.keys(), key=len, reverse=True):
-        # Word-boundary style: abbreviation as a distinct token (surrounded by non-alphanumeric)
-        pattern = r"(?<![A-Za-z0-9])" + re.escape(abbr) + r"(?![A-Za-z0-9])"
+        pattern = r"(?<![A-Za-z0-9])" + re.escape(abbr.upper()) + r"(?![A-Za-z0-9])"
         if re.search(pattern, text_upper):
             return abbrev_to_show[abbr]
     return None
@@ -406,6 +407,128 @@ def process(
     daily_by_show_df = _daily_by_show(xl, week_dates)
 
     return daily_out, weekly_out, daily_by_show_df
+
+
+def _filter_adjust_to_facebook_web(df: pd.DataFrame) -> pd.DataFrame:
+    """Keep only Adjust rows whose campaign name contains 'web' (case-insensitive).
+
+    Checks for column names in order: 'campaign_network' (canonical after normalize),
+    then 'Campaign name' (new-format before normalize). Also accepts Channel == 'Facebook Web'.
+    """
+    df = df.copy()
+    # Try canonical column first
+    for col in ("campaign_network", "Campaign name", "campaign"):
+        if col in df.columns:
+            mask = df[col].astype(str).str.contains("web", case=False, na=False)
+            return df[mask]
+    # Fallback: if Channel column exists, filter by "Facebook Web"
+    if "Channel" in df.columns:
+        return df[df["Channel"].astype(str).str.strip().str.lower() == "facebook web"]
+    return df
+
+
+def _map_meta_to_canonical(meta_df: pd.DataFrame) -> pd.DataFrame:
+    """Map Meta Ads DataFrame columns to the canonical schema used by the processor.
+
+    Input cols: Day, Ad Name, Amount Spent (+ Campaign Name, Ad Set Name, etc.)
+    Output cols: day (datetime), creative_network (Ad Name), cost (Amount Spent)
+    """
+    if meta_df.empty:
+        return pd.DataFrame(columns=["day", "creative_network", "cost"])
+    out = meta_df.rename(columns={
+        "Day": "day",
+        "Ad Name": "creative_network",
+        "Amount Spent": "cost",
+    })
+    out["day"] = pd.to_datetime(out["day"], errors="coerce")
+    out["cost"] = pd.to_numeric(out["cost"], errors="coerce").fillna(0)
+    return out
+
+
+def process_facebook_web(
+    adjust_df: pd.DataFrame,
+    meta_df: pd.DataFrame,
+    daily_date: Optional[pd.Timestamp] = None,
+    weekly_start_date: Optional[pd.Timestamp] = None,
+) -> tuple:
+    """
+    Build Facebook Web Daily/Weekly reports by merging Adjust (trials/subs) with Meta (spend).
+
+    - Adjust rows are filtered to campaign name contains 'web', then mapped to Show Name.
+    - Meta rows are mapped to Show Name via the same abbreviation logic on Ad Name.
+    - The two are merged on (day, Show Name): trials/subs from Adjust, spend from Meta.
+    - Output has the same OUTPUT_COLUMNS format as the main report.
+
+    Returns:
+        (daily_web_output, weekly_web_output) DataFrames.
+    """
+    # --- Adjust side: filter to web, normalize, map show names, aggregate trials/subs ---
+    adj = normalize_input_columns(adjust_df)
+    adj_web = _filter_adjust_to_facebook_web(adj)
+
+    if not adj_web.empty:
+        adj_web = xlookup_by_abbreviations(adj_web)
+        for col in ("free_trial_be_events", "revenue_3ea7d4b1_events"):
+            if col in adj_web.columns:
+                adj_web[col] = pd.to_numeric(adj_web[col], errors="coerce").fillna(0)
+            else:
+                adj_web[col] = 0
+        if "installs" in adj_web.columns:
+            adj_web["installs"] = pd.to_numeric(adj_web["installs"], errors="coerce").fillna(0)
+        else:
+            adj_web["installs"] = 0
+        adj_web["day"] = _parse_day(adj_web["day"])
+        adj_web = adj_web.dropna(subset=["day"])
+        adj_web["Show Name"] = _normalize_show_name_series(adj_web["Show Name"])
+        adj_agg = adj_web.groupby(["day", "Show Name"], as_index=False).agg(
+            free_trial_be_events=("free_trial_be_events", "sum"),
+            revenue_3ea7d4b1_events=("revenue_3ea7d4b1_events", "sum"),
+            installs=("installs", "sum"),
+        )
+    else:
+        adj_agg = pd.DataFrame(columns=["day", "Show Name", "free_trial_be_events", "revenue_3ea7d4b1_events", "installs"])
+
+    # --- Meta side: map to canonical, map show names, aggregate spend ---
+    meta = _map_meta_to_canonical(meta_df)
+    if not meta.empty:
+        meta = xlookup_by_abbreviations(meta)
+        meta["Show Name"] = _normalize_show_name_series(meta["Show Name"])
+        meta_agg = meta.groupby(["day", "Show Name"], as_index=False).agg(cost=("cost", "sum"))
+    else:
+        meta_agg = pd.DataFrame(columns=["day", "Show Name", "cost"])
+
+    # --- Merge on (day, Show Name) ---
+    merged = pd.merge(adj_agg, meta_agg, on=["day", "Show Name"], how="outer")
+    for col in ("free_trial_be_events", "revenue_3ea7d4b1_events", "installs", "cost"):
+        if col not in merged.columns:
+            merged[col] = 0
+        merged[col] = merged[col].fillna(0)
+
+    if merged.empty:
+        empty = pd.DataFrame(columns=OUTPUT_COLUMNS)
+        return empty.copy(), empty.copy()
+
+    # --- Build daily and weekly outputs ---
+    if daily_date is None:
+        daily_date = _yesterday()
+    else:
+        daily_date = pd.Timestamp(daily_date).normalize()
+
+    daily_filtered = _filter_by_dates(merged, [daily_date])
+    daily_pivot = _pivot(daily_filtered)
+    daily_out = _build_output(daily_pivot, _format_date(daily_date))
+
+    if weekly_start_date is None:
+        week_dates = _past_7_days_ending_yesterday()
+    else:
+        weekly_start_date = pd.Timestamp(weekly_start_date).normalize()
+        week_dates = [weekly_start_date + pd.Timedelta(days=i) for i in range(7)]
+
+    weekly_filtered = _filter_by_dates(merged, week_dates)
+    weekly_pivot = _pivot(weekly_filtered)
+    weekly_out = _build_output(weekly_pivot, _format_date_range(week_dates[0], week_dates[-1]))
+
+    return daily_out, weekly_out
 
 
 def normalize_input_columns(df: pd.DataFrame) -> pd.DataFrame:
