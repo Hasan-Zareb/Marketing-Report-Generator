@@ -21,14 +21,18 @@ import requests
 
 ADJUST_CSV_URL = "https://automate.adjust.com/reports-service/csv_report"
 
-# Marketing Performance report: only partners 34 and 254 (same as report URL channel_id__in)
-MARKETING_PERFORMANCE_CHANNEL_IDS = "partner_34,partner_254"
+# Marketing Performance report partners:
+#   partner_34  = Facebook (app installs)
+#   partner_254 = Google Ads
+#   partner_2023 = Facebook Web (web campaigns -- free trials/subs tracked via WEB_ events)
+MARKETING_PERFORMANCE_CHANNEL_IDS = "partner_34,partner_254,partner_2023"
 
 # Adjust dimension/metric slugs that map to our input format
 # Dimensions: partner_name=Channel, campaign, adgroup_network=Adgroup name, creative_network=Ad name, day
 # Metrics: installs, network_cost, + custom events (FREE_TRIAL_BE, REVENUE from Events API)
+#          + web-specific events (WEB_FREE_TRIAL_V2, WEB_REVENUE for Facebook Web channel)
 DEFAULT_DIMENSIONS = "partner_name,campaign,adgroup_network,creative_network,day"
-DEFAULT_METRICS = "installs,network_cost,free_trial_be_events,revenue_3ea7d4b1_events"
+DEFAULT_METRICS = "installs,network_cost,free_trial_be_events,revenue_3ea7d4b1_events,web_free_trial_v2_events,web_revenue_events"
 
 # Column mapping: Adjust API response (slug or readable name) -> our input format
 ADJUST_TO_INPUT = {
@@ -50,6 +54,10 @@ ADJUST_TO_INPUT = {
     "free_trial_be_events": "FREE_TRIAL_BE",
     "revenue": "REVENUE",
     "revenue_3ea7d4b1_events": "REVENUE",
+    "web_free_trial_v2_events": "WEB_FREE_TRIAL_V2",
+    "web_free_trial_v2": "WEB_FREE_TRIAL_V2",
+    "web_revenue_events": "WEB_REVENUE",
+    "web_revenue": "WEB_REVENUE",
 }
 
 
@@ -120,11 +128,13 @@ def fetch_adjust_report(
 
 def _map_to_input_format(df: pd.DataFrame) -> pd.DataFrame:
     """Map Adjust API columns to our input CSV format."""
+    # Sort slugs longest first so "web_revenue_events" matches before "revenue"
+    sorted_slugs = sorted(ADJUST_TO_INPUT.items(), key=lambda x: len(x[0]), reverse=True)
     rename = {}
     for adj_col in df.columns:
         adj_str = str(adj_col)
         adj_lower = adj_str.lower().replace(" ", "_").replace("-", "_")
-        for slug, our_col in ADJUST_TO_INPUT.items():
+        for slug, our_col in sorted_slugs:
             if slug == adj_lower or slug in adj_lower or adj_str == slug:
                 rename[adj_col] = our_col
                 break
@@ -132,7 +142,10 @@ def _map_to_input_format(df: pd.DataFrame) -> pd.DataFrame:
     out = df.rename(columns={c: rename[c] for c in rename if c in df.columns})
 
     # Add missing required columns with placeholders
-    metric_defaults = {"SIGN_UP": 0, "FREE_TRIAL_BE": 0, "REVENUE": 0, "Installs": 0, "Ad spend": 0}
+    metric_defaults = {
+        "SIGN_UP": 0, "FREE_TRIAL_BE": 0, "REVENUE": 0, "Installs": 0, "Ad spend": 0,
+        "WEB_FREE_TRIAL_V2": 0, "WEB_REVENUE": 0,
+    }
     for col, default in metric_defaults.items():
         if col not in out.columns:
             out[col] = default

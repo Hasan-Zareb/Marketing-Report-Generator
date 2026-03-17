@@ -410,20 +410,18 @@ def process(
 
 
 def _filter_adjust_to_facebook_web(df: pd.DataFrame) -> pd.DataFrame:
-    """Keep only Adjust rows whose campaign name contains 'web' (case-insensitive).
+    """Keep only Adjust rows for Facebook Web campaigns.
 
-    Checks for column names in order: 'campaign_network' (canonical after normalize),
-    then 'Campaign name' (new-format before normalize). Also accepts Channel == 'Facebook Web'.
+    Prefers Channel == 'Facebook Web' (most accurate, avoids catching regular Facebook rows
+    that happen to have 'web' in the campaign name). Falls back to campaign name contains 'web'.
     """
     df = df.copy()
-    # Try canonical column first
+    if "Channel" in df.columns:
+        return df[df["Channel"].astype(str).str.strip().str.lower() == "facebook web"]
     for col in ("campaign_network", "Campaign name", "campaign"):
         if col in df.columns:
             mask = df[col].astype(str).str.contains("web", case=False, na=False)
             return df[mask]
-    # Fallback: if Channel column exists, filter by "Facebook Web"
-    if "Channel" in df.columns:
-        return df[df["Channel"].astype(str).str.strip().str.lower() == "facebook web"]
     return df
 
 
@@ -460,23 +458,42 @@ def process_facebook_web(
     - Output has the same OUTPUT_COLUMNS format as the main report.
 
     Returns:
-        (daily_web_output, weekly_web_output) DataFrames.
+        (daily_web_output, weekly_web_output, daily_by_show_web) DataFrames.
+        daily_by_show_web is a per-day-per-show DataFrame for the dashboard.
     """
-    # --- Adjust side: filter to web, normalize, map show names, aggregate trials/subs ---
+    # --- Adjust side: filter to Facebook Web, use WEB-specific columns ---
+    # Facebook Web rows in Adjust have traditional columns (FREE_TRIAL_BE, REVENUE, Ad spend)
+    # always at 0. The real data is in WEB_FREE_TRIAL_V2 (free trials) and WEB_REVENUE (subs).
     adj = normalize_input_columns(adjust_df)
     adj_web = _filter_adjust_to_facebook_web(adj)
 
     if not adj_web.empty:
         adj_web = xlookup_by_abbreviations(adj_web)
-        for col in ("free_trial_be_events", "revenue_3ea7d4b1_events"):
-            if col in adj_web.columns:
-                adj_web[col] = pd.to_numeric(adj_web[col], errors="coerce").fillna(0)
-            else:
-                adj_web[col] = 0
+
+        # Use web-specific columns; fall back to traditional if web cols missing
+        if "WEB_FREE_TRIAL_V2" in adj_web.columns:
+            adj_web["free_trial_be_events"] = pd.to_numeric(
+                adj_web["WEB_FREE_TRIAL_V2"], errors="coerce"
+            ).fillna(0)
+        else:
+            adj_web["free_trial_be_events"] = pd.to_numeric(
+                adj_web.get("free_trial_be_events", 0), errors="coerce"
+            ).fillna(0)
+
+        if "WEB_REVENUE" in adj_web.columns:
+            adj_web["revenue_3ea7d4b1_events"] = pd.to_numeric(
+                adj_web["WEB_REVENUE"], errors="coerce"
+            ).fillna(0)
+        else:
+            adj_web["revenue_3ea7d4b1_events"] = pd.to_numeric(
+                adj_web.get("revenue_3ea7d4b1_events", 0), errors="coerce"
+            ).fillna(0)
+
         if "installs" in adj_web.columns:
             adj_web["installs"] = pd.to_numeric(adj_web["installs"], errors="coerce").fillna(0)
         else:
             adj_web["installs"] = 0
+
         adj_web["day"] = _parse_day(adj_web["day"])
         adj_web = adj_web.dropna(subset=["day"])
         adj_web["Show Name"] = _normalize_show_name_series(adj_web["Show Name"])
@@ -506,7 +523,15 @@ def process_facebook_web(
 
     if merged.empty:
         empty = pd.DataFrame(columns=OUTPUT_COLUMNS)
-        return empty.copy(), empty.copy()
+        empty_daily_by_show = pd.DataFrame(columns=[
+            "day", "Show Name", "#Free Trials", "#Subscriptions", "#Installs", "Ad Spend",
+            "CAC", "Cost of Free Trial", "Conv Trial to Sub %", "Conv Install to Trial %",
+        ])
+        return empty.copy(), empty.copy(), empty_daily_by_show
+
+    # --- Build daily-by-show for dashboard (all dates in merged) ---
+    all_dates = merged["day"].unique().tolist()
+    daily_by_show_web = _daily_by_show(merged, all_dates)
 
     # --- Build daily and weekly outputs ---
     if daily_date is None:
@@ -528,7 +553,7 @@ def process_facebook_web(
     weekly_pivot = _pivot(weekly_filtered)
     weekly_out = _build_output(weekly_pivot, _format_date_range(week_dates[0], week_dates[-1]))
 
-    return daily_out, weekly_out
+    return daily_out, weekly_out, daily_by_show_web
 
 
 def normalize_input_columns(df: pd.DataFrame) -> pd.DataFrame:

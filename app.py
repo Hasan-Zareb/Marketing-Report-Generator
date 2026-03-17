@@ -48,7 +48,7 @@ def main() -> None:
                 "daily_by_show_df", "report_date_range", "last_file_id",
                 "adjust_fetched_df", "meta_fetched_df",
                 "daily_web_df", "weekly_web_df", "daily_web_csv", "weekly_web_csv",
-                "fb_web_status",
+                "daily_web_by_show_df", "fb_web_status",
             ]:
                 if key in st.session_state:
                     st.session_state[key] = None
@@ -168,6 +168,8 @@ def _init_session_state() -> None:
         st.session_state.daily_web_csv = None
     if "weekly_web_csv" not in st.session_state:
         st.session_state.weekly_web_csv = None
+    if "daily_web_by_show_df" not in st.session_state:
+        st.session_state.daily_web_by_show_df = None
     if "fb_web_status" not in st.session_state:
         st.session_state.fb_web_status = None
 
@@ -188,6 +190,19 @@ def _render_dashboard() -> None:
         return
     start, end = report_range
 
+    # Merge Facebook Web daily_by_show into the main dataset so dashboard
+    # charts (especially Daily Ad Spend) include web spend.
+    df_web = st.session_state.get("daily_web_by_show_df")
+    if df_web is not None and not df_web.empty:
+        df_web = df_web.copy()
+        df_web["source"] = "Facebook Web"
+        df_main = df.copy()
+        df_main["source"] = "Adjust"
+        df = pd.concat([df_main, df_web], ignore_index=True)
+    else:
+        df = df.copy()
+        df["source"] = "Adjust"
+
     # Quick filter: which dates to show in dashboard
     filter_choice = st.radio(
         "Date range",
@@ -197,11 +212,9 @@ def _render_dashboard() -> None:
     )
     st.session_state.dashboard_filter = filter_choice
 
-    # Filter daily_by_show_df by selected range
-    df = df.copy()
+    # Filter by selected date range
     df["day"] = pd.to_datetime(df["day"]).dt.date
     if filter_choice == "This Week":
-        # Last 7 days of the data range
         week_end = end
         week_start = end - timedelta(days=6)
         df = df[(df["day"] >= week_start) & (df["day"] <= week_end)]
@@ -210,7 +223,6 @@ def _render_dashboard() -> None:
         df = df[df["day"] == yesterday]
     elif filter_choice == "Today":
         df = df[df["day"] == date.today()]
-    # "All" = no filter (full dataset)
 
     if df.empty:
         st.warning("No data for the selected range.")
@@ -437,9 +449,23 @@ def _chart_daily_volume(df: pd.DataFrame):
 def _chart_daily_spend(df: pd.DataFrame):
     if df.empty:
         return go.Figure().update_layout(template=PLOTLY_TEMPLATE, title="Daily Ad Spend")
-    daily = df.groupby("day", as_index=False).agg({"Ad Spend": "sum"})
     fig = go.Figure()
-    fig.add_trace(go.Scatter(x=daily["day"], y=daily["Ad Spend"], name="Ad Spend", fill="tozeroy", line=dict(color="#E85D04")))
+    if "source" in df.columns and df["source"].nunique() > 1:
+        for source, color in [("Adjust", "#E85D04"), ("Facebook Web", "#9D4EDD")]:
+            sub = df[df["source"] == source]
+            if sub.empty:
+                continue
+            daily = sub.groupby("day", as_index=False).agg({"Ad Spend": "sum"})
+            fig.add_trace(go.Scatter(
+                x=daily["day"], y=daily["Ad Spend"], name=source,
+                fill="tozeroy", line=dict(color=color), stackgroup="spend",
+            ))
+    else:
+        daily = df.groupby("day", as_index=False).agg({"Ad Spend": "sum"})
+        fig.add_trace(go.Scatter(
+            x=daily["day"], y=daily["Ad Spend"], name="Ad Spend",
+            fill="tozeroy", line=dict(color="#E85D04"),
+        ))
     fig.update_layout(template=PLOTLY_TEMPLATE, title="DAILY AD SPEND", xaxis_title="Date", yaxis_title="Ad Spend", colorway=CHART_COLORS)
     return fig
 
@@ -612,7 +638,7 @@ def _render_report_generator() -> None:
 
             if not meta_filtered.empty:
                 try:
-                    daily_web, weekly_web = process_facebook_web(
+                    daily_web, weekly_web, daily_web_by_show = process_facebook_web(
                         adjust_df=df,
                         meta_df=meta_filtered,
                         daily_date=pd.Timestamp(daily_date),
@@ -620,16 +646,19 @@ def _render_report_generator() -> None:
                     )
                     st.session_state.daily_web_df = daily_web
                     st.session_state.weekly_web_df = weekly_web
+                    st.session_state.daily_web_by_show_df = daily_web_by_show
                     st.session_state.daily_web_csv = export_csv(daily_web)
                     st.session_state.weekly_web_csv = export_csv(weekly_web)
                 except Exception as e:
                     st.session_state.fb_web_status = f"Facebook Web report generation failed: {e}"
                     st.session_state.daily_web_df = None
                     st.session_state.weekly_web_df = None
+                    st.session_state.daily_web_by_show_df = None
             else:
                 st.session_state.fb_web_status = "No Meta Ads data for the selected date range."
                 st.session_state.daily_web_df = None
                 st.session_state.weekly_web_df = None
+                st.session_state.daily_web_by_show_df = None
         else:
             if meta_full is None:
                 st.session_state.fb_web_status = st.session_state.get("fb_web_status") or "Meta data not fetched. Click 'Fetch data from Adjust & Meta' first."
@@ -637,6 +666,7 @@ def _render_report_generator() -> None:
                 st.session_state.fb_web_status = "Meta API returned no data."
             st.session_state.daily_web_df = None
             st.session_state.weekly_web_df = None
+            st.session_state.daily_web_by_show_df = None
 
         st.success("Reports ready. View and export below.")
         st.rerun()
