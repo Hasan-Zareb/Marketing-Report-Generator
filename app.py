@@ -422,14 +422,25 @@ def _chart_conversion_rates(df: pd.DataFrame):
 
 
 def _chart_cac_by_show(df: pd.DataFrame):
-    if df.empty or "CAC" not in df.columns:
-        return go.Figure().update_layout(template=PLOTLY_TEMPLATE, title="CAC by Show")
-    df = df.copy()
-    df["CAC_num"] = pd.to_numeric(df["CAC"], errors="coerce")
-    df = df.dropna(subset=["CAC_num"])
     if df.empty:
         return go.Figure().update_layout(template=PLOTLY_TEMPLATE, title="CAC by Show")
-    fig = px.line(df, x="day", y="CAC_num", color="Show Name", title="CAC BY SHOW (day by day)")
+    df = df.copy()
+    # If we have multiple sources (Adjust + Facebook Web), aggregate by (day, Show Name)
+    # so we get one combined CAC per show per day: total Ad Spend / total #Subscriptions.
+    if "source" in df.columns and df["source"].nunique() > 1:
+        agg = df.groupby(["day", "Show Name"], as_index=False).agg(
+            {"Ad Spend": "sum", "#Subscriptions": "sum"}
+        )
+        agg["CAC_num"] = (agg["Ad Spend"] / agg["#Subscriptions"]).where(
+            agg["#Subscriptions"] > 0, float("nan")
+        )
+    else:
+        df["CAC_num"] = pd.to_numeric(df["CAC"], errors="coerce")
+        agg = df[["day", "Show Name", "CAC_num"]].copy()
+    agg = agg.dropna(subset=["CAC_num"])
+    if agg.empty:
+        return go.Figure().update_layout(template=PLOTLY_TEMPLATE, title="CAC by Show")
+    fig = px.line(agg, x="day", y="CAC_num", color="Show Name", title="CAC BY SHOW (day by day)")
     fig.update_layout(template=PLOTLY_TEMPLATE, colorway=CHART_COLORS, legend=dict(traceorder="normal"))
     fig.update_traces(mode="lines", line=dict(width=1.5))
     return fig

@@ -84,6 +84,7 @@ ABBREVIATION_TO_SHOW = {
     "RWI": "Risk Wala Ishq",
     "RAT": "Race Against Time",
     "RWO": "Rickshawala Officer",
+    "RO": "Rickshawala Officer",
     "SBM": "shaadi by mistake",
     "SKG": "suhaag ka gamble",
     "SMC": "saving mr ceo",
