@@ -91,6 +91,7 @@ ABBREVIATION_TO_SHOW = {
     "STS": "shaadi to soulmates",
     "SWS": "saazish wali shaadi",
     "TCC": "the comeback ceo",
+    "TIGER": "tiger",
     "TDPP": "the devil prince's pursuit",
     "TVW": "laapata lady",
     "TROPHY WIFE": "Trophy Wife",
