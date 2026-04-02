@@ -59,6 +59,7 @@ ABBREVIATION_TO_SHOW = {
     "FWL": "Forever was a lie",
     "HAK": "humari adhoori kahani",
     "IO": "independent organ",
+    "IR": "Inspector Romeo",
     "IPUP": "IAS pyaar under pressure",
     "LGRO": "love gone revenge on",
     "LTHU": "love to hate you",
