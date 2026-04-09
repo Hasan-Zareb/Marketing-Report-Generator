@@ -43,6 +43,7 @@ OUTPUT_COLUMNS = [
 ABBREVIATION_TO_SHOW = {
     "BKC": "boss ka comeback",
     "BKB": "Baazigar Ka Badla",
+    "BWP": "border wala pyar",
     "CDS": "ceo's dirty secret",
     "CKW": "ceo ki wapsi",
     "COMB": "crushing on my bodygaurd",
